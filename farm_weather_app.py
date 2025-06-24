@@ -7,7 +7,6 @@ import numpy as np
 import os
 import json
 import concurrent.futures
-import threading
 from typing import Dict, Optional
 
 # Configure page
@@ -120,13 +119,10 @@ def fetch_station_data(station_id, end_date):
         print(f"Error fetching data for station {station_id}: {str(e)}")
         return None
 
-def fetch_single_station(station: Dict, end_date: datetime.date, progress_callback=None) -> tuple:
+def fetch_single_station(station: Dict, end_date: datetime.date) -> tuple:
     """Fetch data for a single station and return results."""
     station_id = station["StationID"]
     farm_name = station["Farm"]
-    
-    if progress_callback:
-        progress_callback(f"Fetching {farm_name}...")
     
     try:
         df = fetch_station_data(station_id, end_date)
@@ -193,29 +189,27 @@ def refresh_data_concurrent(end_date: datetime.date) -> Dict[str, pd.DataFrame]:
     # Create progress tracking
     progress_bar = st.progress(0)
     status_text = st.empty()
+    status_text.text("Starting data refresh...")
     
-    # Thread-safe counter for progress
-    completed = {'count': 0}
-    lock = threading.Lock()
-    
-    def update_progress(message):
-        with lock:
-            completed['count'] += 1
-            progress = completed['count'] / len(STATIONS)
-            progress_bar.progress(progress)
-            status_text.text(f"{message} ({completed['count']}/{len(STATIONS)})")
-    
-    # Use ThreadPoolExecutor for concurrent requests
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    # Use ThreadPoolExecutor for concurrent requests (reduced workers for cloud hosting)
+    max_workers = min(6, len(STATIONS))  # Limit to 6 workers or number of stations, whichever is smaller
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit all tasks
         future_to_station = {
-            executor.submit(fetch_single_station, station, end_date, update_progress): station 
+            executor.submit(fetch_single_station, station, end_date): station 
             for station in STATIONS
         }
         
         # Collect results as they complete
+        completed = 0
         for future in concurrent.futures.as_completed(future_to_station):
             farm_name, df, error = future.result()
+            completed += 1
+            
+            # Update progress in main thread
+            progress = completed / len(STATIONS)
+            progress_bar.progress(progress)
+            status_text.text(f"Completed {farm_name} ({completed}/{len(STATIONS)})")
             
             if df is not None:
                 all_data[farm_name] = df
